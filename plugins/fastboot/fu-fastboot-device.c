@@ -24,6 +24,8 @@ struct _FuFastbootDevice {
 	gboolean secure;
 	guint blocksz;
 	guint operation_delay;
+
+	int fibocom_flash_end; /* fibocom modem needs to be marked When is flash finished */
 };
 
 G_DEFINE_TYPE(FuFastbootDevice, fu_fastboot_device, FU_TYPE_USB_DEVICE)
@@ -340,6 +342,9 @@ fu_fastboot_device_setup(FuDevice *device, GError **error)
 	if (secure != NULL && secure[0] != '\0')
 		self->secure = TRUE;
 
+	if (fu_device_has_vendor_id(self, "USB:0x2CB7")) {
+		self->fibocom_flash_end = 0;
+	}
 	/* success */
 	return TRUE;
 }
@@ -622,7 +627,21 @@ fu_fastboot_device_write_firmware(FuDevice *device,
 				  FwupdInstallFlags flags,
 				  GError **error)
 {
+	FuFastbootDevice *self = FU_FASTBOOT_DEVICE(device);
 	g_autoptr(FuFirmware) manifest = NULL;
+	g_autoptr(FuFirmware) flash_end_file = NULL;
+
+	/* fibocom modem Set the fibocom_flash_end value */
+	if (fu_device_has_vendor_id(self, "USB:0x2CB7")) {
+		flash_end_file = fu_firmware_get_image_by_id(firmware, "flash_end", NULL);
+		manifest = fu_firmware_get_image_by_id(firmware, "partition_nand.xml", NULL);
+		if (flash_end_file != NULL && manifest == NULL) {
+			self->fibocom_flash_end -= 1;
+			return TRUE;
+		} else if (flash_end_file == NULL) {
+			self->fibocom_flash_end += 1;
+		}
+	}
 
 	/* load the manifest of operations */
 	manifest = fu_firmware_get_image_by_id(firmware, "partition_nand.xml", NULL);
@@ -668,6 +687,14 @@ fu_fastboot_device_set_quirk_kv(FuDevice *device,
 static gboolean
 fu_fastboot_device_attach(FuDevice *device, FuProgress *progress, GError **error)
 {
+	/*if flash_end is greater than zero, flash is not finished and attach cannot be executed*/
+	FuFastbootDevice *self = FU_FASTBOOT_DEVICE(device);
+	if (fu_device_has_vendor_id(self, "USB:0x2CB7")) {
+		if (self->fibocom_flash_end > 0) {
+			return TRUE;
+		}
+	}
+
 	if (!fu_fastboot_device_cmd(device,
 				    "reboot",
 				    progress,
